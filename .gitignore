@@ -1,0 +1,65 @@
+# --- Upstream chai-lab source checkout (never vendored here) ---
+_chai_src/
+
+# --- Virtual environments ---
+chai_env/
+.venv/
+venv/
+env/
+
+# --- Generated run artifacts (predictions, Slurm logs) ---
+outputs/
+logs/
+*.out
+*.err
+slurm-*.out
+
+# --- Model downloads / CHAI_DOWNLOADS_DIR contents / weights ---
+downloads/
+chai_models/
+chai_downloads/
+models_v2/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
+*.h5
+
+# --- Prediction outputs ---
+*.cif
+*.npz
+*.zip
+
+# --- Secrets / credentials ---
+.env
+.env.*
+*.env
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+.netrc
+*credentials*.json
+*secret*
+
+# --- Caches ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

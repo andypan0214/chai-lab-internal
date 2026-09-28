@@ -1,0 +1,27 @@
+# chai_hpc/requirements.txt
+#
+# Kept intentionally minimal. chai_lab==0.6.1 is the current PyPI release
+# recommended by the official README (Step A:
+# https://github.com/chaidiscovery/chai-lab, commit 66c38d1,
+# chai_lab.__version__ == "0.6.1"). Installing it pulls in ALL of its own
+# runtime dependencies (torch>=2.3.1, rdkit, gemmi, biopython, pandas,
+# pandera, numpy, einops, jaxtyping, beartype, modelcif, tmtools, typer,
+# ...) as declared in chai-lab's own requirements.in -- we do not repeat or
+# re-pin any of those here, to avoid two sources of truth drifting apart.
+#
+# The only thing this project adds on top of chai_lab is:
+#   - input_builder.py / restraint_builder.py: pure standard library
+#     (re, string, itertools, csv, dataclasses, pathlib) -- nothing to add.
+#   - run_chai.py: imports only chai_lab (lazily) and the standard library.
+#   - chai_hpc/tests/: plain pytest, and do NOT import chai_lab/torch
+#     themselves (see tests/test_run_chai.py, tests/conftest.py).
+#
+# CHANGE_ME: if your HPC's NVIDIA driver requires a specific CUDA build of
+# torch rather than the default PyPI wheel, install torch explicitly BEFORE
+# this file (see setup_env.sh) -- do not edit the torch version here, since
+# chai_lab declares its own torch requirement.
+
+chai_lab==0.6.1
+
+# Test-only: required to run `pytest chai_hpc/tests/`.
+pytest>=7.0
