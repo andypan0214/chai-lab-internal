@@ -96,6 +96,97 @@ pip install --upgrade pip setuptools wheel
 echo "Installing project requirements (requirements.txt) ..."
 pip install -r "$SCRIPT_DIR/requirements.txt"
 
+# ---------------------------------------------------------------------------
+# Kalign >= 3.3 (only needed for run_chai.py --use-templates)
+# ---------------------------------------------------------------------------
+# chai_lab/tools/kalign.py runs `kalign -i ... -o ...` from PATH and asserts
+# "You need kalign>=3.3". Use the system kalign if it is new enough;
+# otherwise build a project-local copy into tools/kalign/bin/kalign, which
+# run_chai.slurm prepends to PATH. Building needs curl (or wget), a C/C++
+# compiler, and cmake >= 3.18 (installed into chai_env via pip if missing or
+# too old). Override the built release with KALIGN_VERSION=x.y.z.
+KALIGN_MIN_VERSION="3.3"
+KALIGN_VERSION="${KALIGN_VERSION:-3.4.0}"
+KALIGN_PREFIX="$SCRIPT_DIR/tools/kalign"
+
+# Prints the X.Y[.Z] version reported by the given kalign binary, or nothing.
+# (Kalign 3.x prints "Kalign (3.4.0)"; Kalign 2.x prints "Kalign version 2.04".)
+kalign_version() {
+    timeout 30 "$1" --version </dev/null 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1 || true
+}
+
+# Succeeds if version $1 >= version $2.
+version_ge() {
+    [ -n "$1" ] && [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
+}
+
+echo
+echo "=== Kalign (>= $KALIGN_MIN_VERSION, required for --use-templates) ==="
+SYSTEM_KALIGN="$(command -v kalign || true)"
+SYSTEM_KALIGN_VERSION=""
+[ -n "$SYSTEM_KALIGN" ] && SYSTEM_KALIGN_VERSION="$(kalign_version "$SYSTEM_KALIGN")"
+
+if version_ge "$SYSTEM_KALIGN_VERSION" "$KALIGN_MIN_VERSION"; then
+    echo "Using system kalign: $SYSTEM_KALIGN (version $SYSTEM_KALIGN_VERSION)"
+elif [ -x "$KALIGN_PREFIX/bin/kalign" ] \
+        && version_ge "$(kalign_version "$KALIGN_PREFIX/bin/kalign")" "$KALIGN_MIN_VERSION"; then
+    echo "Reusing project-local kalign: $KALIGN_PREFIX/bin/kalign (version $(kalign_version "$KALIGN_PREFIX/bin/kalign"))"
+else
+    if [ -n "$SYSTEM_KALIGN" ]; then
+        echo "System kalign $SYSTEM_KALIGN reports version '${SYSTEM_KALIGN_VERSION:-unknown}' (< $KALIGN_MIN_VERSION)."
+    else
+        echo "No kalign found on PATH."
+    fi
+    echo "Building project-local kalign $KALIGN_VERSION into $KALIGN_PREFIX ..."
+
+    if ! command -v cc >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; then
+        echo "ERROR: building kalign needs a C and C++ compiler (cc/c++ not found)." >&2
+        echo "       Load a compiler module (CHANGE_ME block above) or install kalign >= $KALIGN_MIN_VERSION system-wide." >&2
+        exit 1
+    fi
+    CMAKE_VERSION_FOUND=""
+    command -v cmake >/dev/null 2>&1 \
+        && CMAKE_VERSION_FOUND="$(cmake --version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1 || true)"
+    if ! version_ge "$CMAKE_VERSION_FOUND" "3.18"; then
+        echo "cmake >= 3.18 not found (found: '${CMAKE_VERSION_FOUND:-none}'); installing cmake into $VENV_DIR via pip ..."
+        pip install "cmake>=3.18"
+        hash -r
+    fi
+
+    rm -rf "$KALIGN_PREFIX"
+    mkdir -p "$KALIGN_PREFIX/src" "$KALIGN_PREFIX/bin"
+    KALIGN_URL="https://github.com/TimoLassmann/kalign/archive/refs/tags/v${KALIGN_VERSION}.tar.gz"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$KALIGN_URL" -o "$KALIGN_PREFIX/kalign.tar.gz"
+    else
+        wget -q "$KALIGN_URL" -O "$KALIGN_PREFIX/kalign.tar.gz"
+    fi
+    tar -xzf "$KALIGN_PREFIX/kalign.tar.gz" -C "$KALIGN_PREFIX/src" --strip-components=1
+
+    # Static build (no libkalign.so to find at runtime), and no AVX/AVX2 so a
+    # binary built on a login node also runs on older compute-node CPUs.
+    cmake -S "$KALIGN_PREFIX/src" -B "$KALIGN_PREFIX/build" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DENABLE_AVX=OFF \
+        -DENABLE_AVX2=OFF
+    cmake --build "$KALIGN_PREFIX/build" --target kalign-bin -j "${KALIGN_BUILD_JOBS:-4}"
+
+    KALIGN_BUILT="$(find "$KALIGN_PREFIX/build" -type f -name kalign -perm -u+x | head -n1)"
+    if [ -z "$KALIGN_BUILT" ]; then
+        echo "ERROR: kalign build finished but no kalign binary was found under $KALIGN_PREFIX/build." >&2
+        exit 1
+    fi
+    install -m 755 "$KALIGN_BUILT" "$KALIGN_PREFIX/bin/kalign"
+
+    LOCAL_KALIGN_VERSION="$(kalign_version "$KALIGN_PREFIX/bin/kalign")"
+    if ! version_ge "$LOCAL_KALIGN_VERSION" "$KALIGN_MIN_VERSION"; then
+        echo "ERROR: built kalign reports version '${LOCAL_KALIGN_VERSION:-unknown}', expected >= $KALIGN_MIN_VERSION." >&2
+        exit 1
+    fi
+    echo "Built project-local kalign: $KALIGN_PREFIX/bin/kalign (version $LOCAL_KALIGN_VERSION)"
+fi
+
 echo
 echo "=== Verifying install ==="
 python -c "import chai_lab; print('chai_lab version:', chai_lab.__version__)"
@@ -114,6 +205,11 @@ echo "=== setup_env.sh complete ==="
 echo "Next steps:"
 echo "  source $VENV_DIR/bin/activate"
 echo "  python run_chai.py --help"
+if [ -x "$KALIGN_PREFIX/bin/kalign" ]; then
+    echo "For interactive --use-templates runs, also put the local kalign on PATH"
+    echo "(run_chai.slurm does this automatically):"
+    echo "  export PATH=\"$KALIGN_PREFIX/bin:\$PATH\""
+fi
 echo
 echo "Before your first real inference run, also set a persistent model"
 echo "cache directory (see README_HPC.md, 'CHAI_DOWNLOADS_DIR setup'):"

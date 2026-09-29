@@ -71,6 +71,14 @@ echo "=== Python ==="
 python --version
 echo
 
+# Project-local Kalign >= 3.3 built by setup_env.sh when the system kalign is
+# missing or too old (needed by chai_lab only for USE_TEMPLATES=1).
+if [ -x "$SLURM_SUBMIT_DIR/tools/kalign/bin/kalign" ]; then
+    export PATH="$SLURM_SUBMIT_DIR/tools/kalign/bin:$PATH"
+fi
+echo "kalign: $(command -v kalign || echo '(not found -- only needed for USE_TEMPLATES=1)')"
+echo
+
 echo "=== torch / CUDA check ==="
 python -c "
 import torch

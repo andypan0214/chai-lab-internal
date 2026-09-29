@@ -70,6 +70,18 @@ source chai_env/bin/activate
   chai-lab's own transitive deps: torch, rdkit, gemmi, biopython, pandas,
   pandera, etc. -- see `requirements.txt` for details),
 - **fails fast** (`set -euo pipefail`) on any installation error,
+- ensures **Kalign >= 3.3** is available (needed only for `--use-templates`;
+  `chai_lab/tools/kalign.py` runs `kalign` from `PATH`):
+  - if the system `kalign` reports a version >= 3.3, it is used as-is;
+  - otherwise Kalign `v3.4.0` (override with `KALIGN_VERSION=x.y.z`) is
+    downloaded from GitHub and built into the project-local
+    `tools/kalign/bin/kalign` (static, no AVX/AVX2, so a binary built on the
+    login node also runs on compute nodes). This needs `curl`/`wget`, a
+    C/C++ compiler (`cc`/`c++`), and `cmake >= 3.18` -- if cmake is missing
+    or too old, it is `pip install`ed into `chai_env`. An existing adequate
+    `tools/kalign/bin/kalign` is reused on re-runs; `tools/kalign/` is git-ignored.
+  - `run_chai.slurm` prepends `tools/kalign/bin` to `PATH` automatically. For
+    interactive runs, do it yourself: `export PATH="$PWD/tools/kalign/bin:$PATH"`.
 - prints the installed `chai_lab`/`torch` versions and `torch.cuda.is_available()`
   as a sanity check (expected `False` on a GPU-less login node -- that's fine).
 
@@ -158,7 +170,8 @@ FASTA_PATH=my_job.fasta RESTRAINTS_PATH=restraints.csv USE_MSA=1 SEED=42 \
     sbatch --export=ALL,FASTA_PATH,RESTRAINTS_PATH,USE_MSA,SEED run_chai.slurm
 ```
 
-(`--use-templates`/`USE_TEMPLATES=1` requires `USE_MSA=1`.)
+(`--use-templates`/`USE_TEMPLATES=1` requires `USE_MSA=1` and Kalign >= 3.3,
+which `setup_env.sh` sets up -- see section 3.)
 
 ## 8. Monitoring / logs / cancellation
 
@@ -219,7 +232,7 @@ Other generated/log locations:
 has actually executed on this cluster's hardware.**
 
 Verified so far, by reading the official source and by non-GPU unit tests
-(`tests/`, 77 tests total across `input_builder.py`, `restraint_builder.py`,
+(`tests/`, 86 tests total across `input_builder.py`, `restraint_builder.py`,
 and `run_chai.py`'s CLI/validation -- 4 of which round-trip generated
 restraint CSVs through the real `chai_lab.data.parsing.restraints` parser;
 those 4 auto-skip if `pandas`/`pandera` aren't installed, e.g. in a
@@ -320,6 +333,18 @@ RunChaiError: --use-templates requires --use-msa. ...
 protein is present and no MSA server/directory populated a templates path).
 Add `--use-msa` (or `USE_MSA=1` in `run_chai.slurm`), or drop
 `--use-templates`.
+
+### Kalign missing or outdated
+
+```
+RunChaiError: --use-templates requires kalign >= 3.3 ...
+```
+`run_chai.py` checks `kalign --version` before calling Chai whenever
+`--use-templates` is set (chai_lab itself would only fail mid-inference).
+Re-run `bash setup_env.sh` to build `tools/kalign/bin/kalign`, and for
+interactive runs `export PATH="$PWD/tools/kalign/bin:$PATH"`. If the build
+fails, check that `cc`/`c++` are available (load a compiler module) and that
+the login node can reach `github.com`.
 
 ---
 

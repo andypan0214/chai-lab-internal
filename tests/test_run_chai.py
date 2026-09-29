@@ -6,12 +6,17 @@ installed). GPU / actual inference behavior is NOT covered here -- see the
 report accompanying Step C for what remains untested until run on the HPC.
 """
 
+import subprocess
+
 import pytest
 
+import run_chai
 from run_chai import (
     RunChaiError,
     build_arg_parser,
     build_run_kwargs,
+    check_kalign,
+    parse_kalign_version,
     validate_args,
 )
 
@@ -248,3 +253,60 @@ class TestBuildRunKwargs:
             "num_trunk_samples", "seed", "device", "low_memory",
             "fasta_names_as_cif_chains",
         }
+
+
+# ---------------------------------------------------------------------------
+# --use-templates requires kalign >= 3.3 on PATH (checked before inference)
+# ---------------------------------------------------------------------------
+class TestKalignCheck:
+    def _args(self, tmp_path, *extra):
+        fasta = _make_fasta(tmp_path)
+        return build_arg_parser().parse_args(
+            ["--fasta", str(fasta), "--output", str(tmp_path / "outputs"), *extra]
+        )
+
+    def _fake_kalign(self, monkeypatch, output):
+        monkeypatch.setattr(run_chai.shutil, "which", lambda name: "/opt/bin/kalign")
+        monkeypatch.setattr(
+            run_chai.subprocess,
+            "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=output, stderr=""),
+        )
+
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            ("\nKalign (3.4.0)\n\nCopyright (C) 2006,2019 Timo Lassmann\n", (3, 4, 0)),
+            ("Kalign version 2.04, Copyright (C) 2004, 2005, 2006 Timo Lassmann", (2, 4)),
+            ("no version here", None),
+        ],
+    )
+    def test_parse_kalign_version(self, text, expected):
+        assert parse_kalign_version(text) == expected
+
+    def test_not_checked_without_templates(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_chai.shutil, "which", lambda name: None)
+        check_kalign(self._args(tmp_path, "--use-msa"))  # must not raise
+
+    def test_missing_kalign_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_chai.shutil, "which", lambda name: None)
+        args = self._args(tmp_path, "--use-msa", "--use-templates")
+        with pytest.raises(RunChaiError, match="no kalign was found"):
+            check_kalign(args)
+
+    def test_outdated_kalign_rejected(self, tmp_path, monkeypatch):
+        self._fake_kalign(monkeypatch, "Kalign version 2.04")
+        args = self._args(tmp_path, "--use-msa", "--use-templates")
+        with pytest.raises(RunChaiError, match="reports version 2.4"):
+            check_kalign(args)
+
+    def test_unparseable_kalign_version_rejected(self, tmp_path, monkeypatch):
+        self._fake_kalign(monkeypatch, "usage: kalign ...")
+        args = self._args(tmp_path, "--use-msa", "--use-templates")
+        with pytest.raises(RunChaiError, match="reports version unknown"):
+            check_kalign(args)
+
+    @pytest.mark.parametrize("output", ["Kalign (3.3)", "Kalign (3.4.0)"])
+    def test_adequate_kalign_accepted(self, tmp_path, monkeypatch, output):
+        self._fake_kalign(monkeypatch, output)
+        check_kalign(self._args(tmp_path, "--use-msa", "--use-templates"))  # must not raise

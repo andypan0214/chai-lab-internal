@@ -7,6 +7,9 @@ chai_env/
 venv/
 env/
 
+# --- Project-local Kalign build (setup_env.sh: source, build dir, binary) ---
+tools/kalign/
+
 # --- Generated run artifacts (predictions, Slurm logs) ---
 outputs/
 logs/

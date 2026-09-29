@@ -40,6 +40,12 @@ for. Verified facts this wrapper depends on:
     this unconditionally at the CLI level (regardless of what's in the
     FASTA) rather than letting a job fail deep inside inference.
 
+  - `--use-templates` also needs a `kalign` >= 3.3 binary on PATH:
+    chai_lab/tools/kalign.py shells out to `kalign -i ... -o ...` and only
+    asserts its presence ("You need kalign>=3.3") once template hits are
+    being aligned, deep inside inference. check_kalign() verifies both
+    presence and version up front instead.
+
   - We always call run_inference(fasta_names_as_cif_chains=True) -- see
     input_builder.py's module docstring for why this is the naming mode our
     generated FASTA/restraint files assume.
@@ -58,16 +64,21 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 logger = logging.getLogger("run_chai")
 
+KALIGN_MIN_VERSION = (3, 3)
+
 
 class RunChaiError(RuntimeError):
     """A pre-flight configuration problem this wrapper caught before ever
     calling chai_lab (bad CLI args, missing files, non-empty output dir,
-    unmet --use-templates/--use-msa dependency).
+    unmet --use-templates/--use-msa dependency, missing/outdated kalign).
 
     Deliberately NOT caught anywhere in this module: we want the same
     behavior for these errors as for a real exception raised inside
@@ -168,6 +179,56 @@ def validate_args(args: argparse.Namespace) -> None:
             )
 
 
+def parse_kalign_version(text: str) -> tuple[int, ...] | None:
+    """Extract the first X.Y[.Z] version from `kalign --version` output
+    (Kalign 3.x: "Kalign (3.4.0)"; Kalign 2.x: "Kalign version 2.04")."""
+    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups() if part is not None)
+
+
+def check_kalign(args: argparse.Namespace) -> None:
+    """With --use-templates, require kalign >= 3.3 on PATH (see module
+    docstring). No-op otherwise."""
+    if not args.use_templates:
+        return
+
+    min_version = ".".join(map(str, KALIGN_MIN_VERSION))
+    hint = (
+        "Run setup_env.sh (it builds tools/kalign/bin/kalign if the system "
+        "kalign is missing or too old), then put it on PATH: "
+        'export PATH="$PWD/tools/kalign/bin:$PATH" (run_chai.slurm does this '
+        "automatically). Or drop --use-templates."
+    )
+
+    kalign = shutil.which("kalign")
+    if kalign is None:
+        raise RunChaiError(
+            f"--use-templates requires kalign >= {min_version} on PATH, but no "
+            f"kalign was found. {hint}"
+        )
+
+    try:
+        proc = subprocess.run(
+            [kalign, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RunChaiError(f"Could not run '{kalign} --version': {e}. {hint}") from e
+
+    version = parse_kalign_version(proc.stdout + proc.stderr)
+    if version is None or version < KALIGN_MIN_VERSION:
+        found = ".".join(map(str, version)) if version else "unknown"
+        raise RunChaiError(
+            f"--use-templates requires kalign >= {min_version}, but {kalign} "
+            f"reports version {found}. {hint}"
+        )
+
+
 def build_run_kwargs(args: argparse.Namespace) -> dict:
     """Build the exact kwargs passed to chai_lab.chai1.run_inference().
 
@@ -242,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     validate_args(args)
+    check_kalign(args)
 
     # Requirement: "create output directory". Safe here -- validate_args()
     # already guaranteed args.output is either absent or empty.
