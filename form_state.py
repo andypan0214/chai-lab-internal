@@ -245,11 +245,22 @@ class ValidatedJob:
     restraint_rows: list[NormalizedRestraintRow]
 
 
-def validate_config(config: dict) -> ValidatedJob:
+OFFLINE_MSA_MESSAGE = (
+    "MSAs and templates are unavailable: this server runs in offline mode, and "
+    "MSA/template search uses the external ColabFold server. Untick Use MSAs and "
+    "Use Templates, or ask an administrator to run the job with precomputed "
+    "MSAs/template hits."
+)
+
+
+def validate_config(config: dict, *, offline: bool = False) -> ValidatedJob:
     """Validate a normalized config with the backend builders. Raises
-    FormValidationError listing every problem found."""
+    FormValidationError listing every problem found. With offline=True
+    (CHAI_OFFLINE_MODE), server-based MSA/template search is refused."""
     messages: list[str] = []
 
+    if offline and (config.get("use_msa") or config.get("use_templates")):
+        messages.append(OFFLINE_MSA_MESSAGE)
     if config.get("use_templates") and not config.get("use_msa"):
         messages.append(
             "Use Templates requires Use MSAs (templates are found from the MSA search)."

@@ -242,8 +242,8 @@ Other generated/log locations:
 has actually executed on this cluster's hardware.**
 
 Verified so far, by reading the official source and by non-GPU unit tests
-(`tests/`, 119 tests total across `input_builder.py`, `restraint_builder.py`,
-the web modules (`tests/test_web.py`),
+(`tests/`, 142 tests total across `input_builder.py`, `restraint_builder.py`,
+the web modules (`tests/test_web.py`), offline mode (`tests/test_offline.py`),
 and `run_chai.py`'s CLI/validation -- 4 of which round-trip generated
 restraint CSVs through the real `chai_lab.data.parsing.restraints` parser;
 those 4 auto-skip if `pandas`/`pandera` aren't installed, e.g. in a
@@ -406,14 +406,12 @@ edit its `#SBATCH` CHANGE_ME lines or set
    Chai writes into the CIF B-factor column, PAE from
    `confidence.model_idx_*.npz` (colour range 0 to the matrix maximum).
 
-**Current limitation -- the 3D viewer needs browser internet access.** The
-structure viewer loads 3Dmol.js 2.5.5 from
-`https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.5.5/3Dmol-min.js` in the
-*user's browser* (`THREE_DMOL_JS` in `streamlit_app.py`). The Streamlit
-server itself needs no internet. If a browser cannot reach cdnjs (offline
-lab network, blocking proxy), the structure panel stays empty; everything
-else (scores, PAE heatmap, tables, downloads) still works. Offline bundling
-of 3Dmol.js is not implemented yet.
+**The browser needs no internet access.** The 3D viewer uses a vendored
+copy of 3Dmol.js 2.5.5 (`vendor/3Dmol/3Dmol-min.js`, BSD-3-Clause, hash in
+`vendor/3Dmol/README.md`), inlined into the viewer's iframe by
+`streamlit_app.py`. The Streamlit UI, its fonts/icons and the Plotly PAE
+heatmap are bundled with the `streamlit`/`plotly` Python packages and served
+by the app itself. See section 13 to verify this.
 
 ### Example presets
 
@@ -422,6 +420,82 @@ shown to users; the small MSA + template demo stays hidden
 (`small_msa_template_candidate.csv`) until it has passed a real HPC run.
 Start the app with `CHAI_WEB_SHOW_CANDIDATE_PRESETS=1` to submit it for that
 validation, then rename it to `small_msa_template.csv`.
+
+## 13. Offline mode
+
+The deployment is offline-first on two levels.
+
+**Browser (always, no setting needed).** Everything a lab member's browser
+loads comes from the Streamlit server: UI, molecule input, presets,
+contact/pocket restraints, prediction history, result pages, ipTM/pTM, the
+PAE heatmap, the interactive pLDDT-coloured 3D structure and downloads. No
+CDN or other external host is contacted.
+
+**Server + HPC jobs: `CHAI_OFFLINE_MODE=1`.** Set it in the environment of
+the web server (`CHAI_OFFLINE_MODE=1 bash run_web.sh`) and/or of CLI/Slurm
+jobs. Web jobs inherit it through `sbatch` (default `--export=ALL`). With it
+set:
+
+- MSA and template **server** search (`--use-msa`, `--use-templates`; the
+  web "Use MSAs"/"Use Templates" boxes) is refused with a clear message.
+  Nothing falls back to the internet.
+- `run_chai.py` checks, before inference, that every file chai_lab would
+  otherwise download already exists (`offline.py`), and fails with an
+  administrator-facing list of what is missing instead of downloading:
+
+  ```
+  $CHAI_DOWNLOADS_DIR/models_v2/feature_embedding.pt
+  $CHAI_DOWNLOADS_DIR/models_v2/bond_loss_input_proj.pt
+  $CHAI_DOWNLOADS_DIR/models_v2/token_embedder.pt
+  $CHAI_DOWNLOADS_DIR/models_v2/trunk.pt
+  $CHAI_DOWNLOADS_DIR/models_v2/diffusion_module.pt
+  $CHAI_DOWNLOADS_DIR/models_v2/confidence_head.pt
+  $CHAI_DOWNLOADS_DIR/conformers_v1.apkl
+  $CHAI_DOWNLOADS_DIR/esm/traced_sdpa_esm2_t36_3B_UR50D_fp16.pt
+  ```
+
+  (chai_lab only downloads a file when it is absent, so this guarantees no
+  download.) `CHAI_DOWNLOADS_DIR` must be set explicitly, on a filesystem the
+  GPU nodes can read. The web app runs the same check before submitting and
+  tells users to contact the administrator if files are missing (details go
+  to the web server log only).
+- Unset / `0`: online behaviour exactly as before (server MSA/templates,
+  on-demand model download).
+
+**Populating `CHAI_DOWNLOADS_DIR` once.** On any machine with internet
+access that writes to the same shared path, run one normal (online)
+prediction with `CHAI_DOWNLOADS_DIR` exported; chai_lab downloads all files
+above on first use. Or copy an existing, complete downloads directory. Model
+weights are never committed to Git.
+
+**MSAs / templates offline (precomputed data, CLI/Slurm only).** No local
+ColabFold/MMseqs database is provided. Precomputed inputs can be passed
+straight to chai_lab:
+
+| input | run_chai.py | run_chai.slurm | format |
+|---|---|---|---|
+| MSAs | `--msa-directory DIR` | `MSA_DIRECTORY=DIR` | `<sha256(uppercase sequence)>.aligned.pqt` per protein sequence (chai_lab `expected_basename`); e.g. the `msas/` folder of an earlier online run |
+| template hits | `--template-hits FILE.m8` | `TEMPLATE_HITS_PATH=FILE.m8` | tab-separated m8, query ID = chain ID; offline, every hit's `<PDBID>.cif.gz` must already be in `$CHAI_TEMPLATE_CIF_FOLDER` (default `$CHAI_DOWNLOADS_DIR/template_cifs`), otherwise the preflight lists the missing IDs |
+
+They cannot be combined with the matching server flag. Template hits need
+Kalign >= 3.3 like `--use-templates` (handled by `setup_env.sh`). The web
+form does not accept precomputed MSAs/templates; in offline mode it shows
+that MSAs/templates are unavailable.
+
+**Still online-only:** server MSA search and server template search
+(ColabFold), downloading missing model files or template structures, and
+installation itself (`setup_env.sh` needs PyPI and, when building Kalign,
+github.com).
+
+**Verifying the browser needs no internet.** With the app running, open a
+result page with the browser's developer tools open (Network tab): every
+request goes to the app's own host, and there is no request to cdnjs,
+unpkg, jsdelivr or any other host. Or block outbound traffic for the
+browser (e.g. disconnect the client from the internet while keeping the SSH
+tunnel) and reload a result page: the structure still renders and can be
+rotated (left-drag), zoomed (scroll) and translated (right- or middle-drag).
+`tests/test_offline.py` also asserts the app has no external `<script src>`
+and that the vendored file matches its recorded hash.
 
 ---
 

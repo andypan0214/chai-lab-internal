@@ -124,6 +124,17 @@ SEED="${SEED:-}"
 USE_MSA="${USE_MSA:-0}"
 USE_TEMPLATES="${USE_TEMPLATES:-0}"
 
+# Optional precomputed inputs (no server calls; usable with CHAI_OFFLINE_MODE=1):
+# MSA_DIRECTORY=<dir of *.aligned.pqt>, TEMPLATE_HITS_PATH=<hits .m8>.
+MSA_DIRECTORY="${MSA_DIRECTORY:-}"
+TEMPLATE_HITS_PATH="${TEMPLATE_HITS_PATH:-}"
+
+# CHAI_OFFLINE_MODE=1 is read by run_chai.py itself (exported by sbatch's
+# default --export=ALL): it refuses server MSA/templates and checks that all
+# model files already exist under CHAI_DOWNLOADS_DIR before inference.
+CHAI_OFFLINE_MODE="${CHAI_OFFLINE_MODE:-0}"
+export CHAI_OFFLINE_MODE
+
 # Each job gets its own isolated, never-reused output directory. The web app
 # (job_manager.py) overrides OUTPUT_DIR with its own per-job directory.
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/job_${SLURM_JOB_ID}}"
@@ -133,6 +144,8 @@ RUN_ARGS=(--fasta "$FASTA_PATH" --output "$OUTPUT_DIR")
 [ -n "$RESTRAINTS_PATH" ] && RUN_ARGS+=(--restraints "$RESTRAINTS_PATH")
 [ "$USE_MSA" = "1" ] && RUN_ARGS+=(--use-msa)
 [ "$USE_TEMPLATES" = "1" ] && RUN_ARGS+=(--use-templates)
+[ -n "$MSA_DIRECTORY" ] && RUN_ARGS+=(--msa-directory "$MSA_DIRECTORY")
+[ -n "$TEMPLATE_HITS_PATH" ] && RUN_ARGS+=(--template-hits "$TEMPLATE_HITS_PATH")
 
 echo "=== Configuration ==="
 echo "FASTA_PATH:      $FASTA_PATH"
@@ -140,6 +153,9 @@ echo "RESTRAINTS_PATH: ${RESTRAINTS_PATH:-(none)}"
 echo "SEED:            ${SEED:-(none)}"
 echo "USE_MSA:         $USE_MSA"
 echo "USE_TEMPLATES:   $USE_TEMPLATES"
+echo "MSA_DIRECTORY:   ${MSA_DIRECTORY:-(none)}"
+echo "TEMPLATE_HITS:   ${TEMPLATE_HITS_PATH:-(none)}"
+echo "OFFLINE_MODE:    $CHAI_OFFLINE_MODE"
 echo "OUTPUT_DIR:      $OUTPUT_DIR"
 echo "run_chai.py args: ${RUN_ARGS[*]}"
 echo

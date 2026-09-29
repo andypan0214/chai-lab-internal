@@ -20,8 +20,10 @@ from __future__ import annotations
 import html
 import io
 import json
+import logging
 import os
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -43,13 +45,24 @@ from form_state import (
 )
 from input_builder import VALID_MOLECULE_TYPES, build_chai_input
 from job_manager import FAILED, QUEUED, RUNNING, SUCCESS, TERMINAL_STATUSES, JobError, JobStore
+from offline import missing_model_assets, offline_mode_enabled
 from presets import PresetError, list_presets, load_preset
 from restraint_builder import VALID_RESTRAINT_TYPES
 from result_adapter import Candidate, ResultError, load_candidates, output_files
 
 st.set_page_config(page_title="Chai-1 structure prediction", layout="wide")
 
-THREE_DMOL_JS = "https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.5.5/3Dmol-min.js"
+# Vendored 3Dmol.js (see vendor/3Dmol/README.md). It is inlined into the
+# viewer iframe, so the browser never fetches JavaScript from anywhere else.
+THREE_DMOL_JS_PATH = Path(__file__).resolve().parent / "vendor" / "3Dmol" / "3Dmol-min.js"
+
+OFFLINE = offline_mode_enabled()
+
+
+@st.cache_resource
+def _three_dmol_js() -> str:
+    # "</script" inside the library would end the inline <script> element early.
+    return THREE_DMOL_JS_PATH.read_text(encoding="utf-8").replace("</script", "<\\/script")
 
 # pLDDT bins and colours (AlphaFold/Chai convention), highest first.
 PLDDT_BINS = [
@@ -234,6 +247,12 @@ def predict_page() -> None:
             "Search for known structures with similar sequences and give them to "
             "the model as templates. Requires MSAs."
         )
+        if OFFLINE:
+            for col in (c1, c2):
+                col.markdown(
+                    ":orange[**Unavailable: this server runs in offline mode** "
+                    "(MSA/template search uses an external server).]"
+                )
         form["specify_restraints"] = c3.checkbox(
             "Specify restraints", key=_seed("w_specify_restraints", form["specify_restraints"])
         )
@@ -373,10 +392,21 @@ def predict_page() -> None:
 def _submit(form: dict) -> None:
     ss.pop("submit_errors", None)
     try:
-        validated = validate_config(form_to_config(form))
+        validated = validate_config(form_to_config(form), offline=OFFLINE)
     except FormValidationError as e:
         ss.submit_errors = e.messages
         return
+    if OFFLINE:
+        problems = missing_model_assets()
+        if problems:
+            # Details (which may contain server paths) go to the server log only.
+            logging.getLogger("streamlit_app").error("Offline asset preflight failed: %s", problems)
+            ss.submit_errors = [
+                "This server runs in offline mode, but the Chai-1 model files are not "
+                "installed yet, so predictions cannot run. Please contact the administrator "
+                "(details are in the web server log)."
+            ]
+            return
     try:
         with st.spinner("Submitting prediction ..."):
             job = _store().create_and_submit(validated)
@@ -604,7 +634,7 @@ def _structure_html(cif_text: str) -> str:
     cif_js = json.dumps(cif_text).replace("</", "<\\/")  # keep "</script>" inert
     return f"""
 <div id="viewer" style="width:100%;height:500px;position:relative;"></div>
-<script src="{THREE_DMOL_JS}"></script>
+<script>{_three_dmol_js()}</script>
 <script>
   const bins = {bins_js};
   // B_iso_or_equiv holds Chai's per-atom pLDDT on a 0-100 scale.
@@ -742,11 +772,16 @@ def _render_inputs(config: dict, seq_rows: list[dict]) -> None:
 # ===========================================================================
 # Navigation
 # ===========================================================================
+# Emoji page icons: Streamlit fetches ":material/...:" *navigation* icons as
+# SVGs from fonts.gstatic.com, which an offline browser cannot reach (button
+# and markdown material icons use the bundled font and are fine).
 PAGES = {
-    "predict": st.Page(predict_page, title="Predict new structure", icon=":material/add_circle:",
-                       default=True),
-    "predictions": st.Page(predictions_page, title="Predictions", icon=":material/assignment:",
+    "predict": st.Page(predict_page, title="Predict new structure", icon="➕", default=True),
+    "predictions": st.Page(predictions_page, title="Predictions", icon="📋",
                            url_path="predictions"),
 }
+
+if OFFLINE:
+    st.sidebar.caption(":material/cloud_off: Offline mode: no external servers are used.")
 
 st.navigation(list(PAGES.values())).run()

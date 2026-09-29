@@ -234,7 +234,11 @@ class JobStore:
             "USE_MSA": "1" if config["use_msa"] else "0",
             "USE_TEMPLATES": "1" if config["use_templates"] else "0",
             "SEED": "",
+            "MSA_DIRECTORY": "",
+            "TEMPLATE_HITS_PATH": "",
             "OUTPUT_DIR": str(job_dir / "output"),
+            # CHAI_OFFLINE_MODE / CHAI_DOWNLOADS_DIR are inherited from the
+            # web server's environment (see README_HPC.md, "Offline mode").
         }
         try:
             job["slurm_job_id"] = self.backend.submit(job_dir, env, job_name=f"chai1-web-{job_id}")

@@ -20,10 +20,15 @@ for. Verified facts this wrapper depends on:
     constraint_path, use_templates_server, template_hits_path,
     recycle_msa_subsample, num_trunk_recycles, num_diffn_timesteps,
     num_diffn_samples, num_trunk_samples, seed, device, low_memory,
-    fasta_names_as_cif_chains. We only expose --seed, --restraints,
-    --use-msa, --use-templates on the CLI per this task's scope, and pass
+    fasta_names_as_cif_chains. We expose --seed, --restraints, --use-msa,
+    --use-templates, and (for offline use) --msa-directory ->
+    msa_directory and --template-hits -> template_hits_path, and pass
     every other run_inference argument as its own default -- we do not
     invent extra parameters or flags.
+
+  - CHAI_OFFLINE_MODE=1: check_offline() (see offline.py) rejects the
+    server flags and requires every file chai_lab would otherwise download
+    to exist already, so no download is ever attempted.
 
   - `output_dir` must not exist, or must be empty
     (chai_lab/chai1.py:530-533: `if output_dir.exists(): assert not any(
@@ -40,7 +45,7 @@ for. Verified facts this wrapper depends on:
     this unconditionally at the CLI level (regardless of what's in the
     FASTA) rather than letting a job fail deep inside inference.
 
-  - `--use-templates` also needs a `kalign` >= 3.3 binary on PATH:
+  - `--use-templates` / `--template-hits` also need `kalign` >= 3.3 on PATH:
     chai_lab/tools/kalign.py shells out to `kalign -i ... -o ...` and only
     asserts its presence ("You need kalign>=3.3") once template hits are
     being aligned, deep inside inference. check_kalign() verifies both
@@ -64,11 +69,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from offline import missing_model_assets, missing_template_cifs, offline_mode_enabled
 
 logger = logging.getLogger("run_chai")
 
@@ -137,6 +145,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Use the templates server, forwarded as "
         "run_inference(use_templates_server=True). Requires --use-msa.",
     )
+    parser.add_argument(
+        "--msa-directory",
+        type=Path,
+        default=None,
+        help="Directory of precomputed <sha256(sequence)>.aligned.pqt MSA files, "
+        "forwarded as run_inference(msa_directory=...). No server call. "
+        "Cannot be combined with --use-msa.",
+    )
+    parser.add_argument(
+        "--template-hits",
+        type=Path,
+        default=None,
+        help="Precomputed template hits (.m8, query IDs = chain IDs), forwarded as "
+        "run_inference(template_hits_path=...). Cannot be combined with "
+        "--use-templates. In offline mode every hit's <PDBID>.cif.gz must already "
+        "be in the template CIF folder.",
+    )
     return parser
 
 
@@ -166,6 +191,19 @@ def validate_args(args: argparse.Namespace) -> None:
             "(chai_lab/chai1.py:423-425). Add --use-msa, or drop --use-templates."
         )
 
+    # make_all_atom_feature_context() asserts these pairs are exclusive
+    # (chai_lab/chai1.py:352-357).
+    if args.use_msa and args.msa_directory is not None:
+        raise RunChaiError("--use-msa and --msa-directory cannot be combined; choose one MSA source.")
+    if args.use_templates and args.template_hits is not None:
+        raise RunChaiError(
+            "--use-templates and --template-hits cannot be combined; choose one template source."
+        )
+    if args.msa_directory is not None and not args.msa_directory.is_dir():
+        raise RunChaiError(f"--msa-directory is not a directory: {args.msa_directory}")
+    if args.template_hits is not None and not args.template_hits.is_file():
+        raise RunChaiError(f"--template-hits is not a file: {args.template_hits}")
+
     if args.output.exists():
         if not args.output.is_dir():
             raise RunChaiError(f"--output path exists and is not a directory: {args.output}")
@@ -188,24 +226,52 @@ def parse_kalign_version(text: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in match.groups() if part is not None)
 
 
+def check_offline(args: argparse.Namespace, environ=os.environ) -> None:
+    """In offline mode (CHAI_OFFLINE_MODE=1), refuse anything that would reach
+    the internet and require every file chai_lab would otherwise download
+    (see offline.py). No-op in online mode."""
+    if not offline_mode_enabled(environ):
+        return
+    if args.use_msa or args.use_templates:
+        raise RunChaiError(
+            "CHAI_OFFLINE_MODE is set: --use-msa / --use-templates call the external "
+            "ColabFold server and are unavailable offline. Use precomputed inputs "
+            "instead (--msa-directory DIR, --template-hits FILE.m8), or run without "
+            "MSAs/templates."
+        )
+    problems = missing_model_assets(environ)
+    if args.template_hits is not None:
+        problems += missing_template_cifs(args.template_hits, environ)
+    if problems:
+        raise RunChaiError(
+            "CHAI_OFFLINE_MODE is set, but local resources are missing, and chai_lab "
+            "would try to download them:\n  - "
+            + "\n  - ".join(problems)
+            + "\nAdministrator: populate CHAI_DOWNLOADS_DIR once from a machine with "
+            "internet access (e.g. one online run with the same CHAI_DOWNLOADS_DIR), "
+            "see README_HPC.md 'Offline mode'."
+        )
+
+
 def check_kalign(args: argparse.Namespace) -> None:
-    """With --use-templates, require kalign >= 3.3 on PATH (see module
-    docstring). No-op otherwise."""
-    if not args.use_templates:
+    """With --use-templates or --template-hits, require kalign >= 3.3 on PATH
+    (see module docstring). No-op otherwise."""
+    if not (args.use_templates or args.template_hits is not None):
         return
 
+    flag = "--use-templates" if args.use_templates else "--template-hits"
     min_version = ".".join(map(str, KALIGN_MIN_VERSION))
     hint = (
         "Run setup_env.sh (it builds tools/kalign/bin/kalign if the system "
         "kalign is missing or too old), then put it on PATH: "
         'export PATH="$PWD/tools/kalign/bin:$PATH" (run_chai.slurm does this '
-        "automatically). Or drop --use-templates."
+        f"automatically). Or drop {flag}."
     )
 
     kalign = shutil.which("kalign")
     if kalign is None:
         raise RunChaiError(
-            f"--use-templates requires kalign >= {min_version} on PATH, but no "
+            f"{flag} requires kalign >= {min_version} on PATH, but no "
             f"kalign was found. {hint}"
         )
 
@@ -224,7 +290,7 @@ def check_kalign(args: argparse.Namespace) -> None:
     if version is None or version < KALIGN_MIN_VERSION:
         found = ".".join(map(str, version)) if version else "unknown"
         raise RunChaiError(
-            f"--use-templates requires kalign >= {min_version}, but {kalign} "
+            f"{flag} requires kalign >= {min_version}, but {kalign} "
             f"reports version {found}. {hint}"
         )
 
@@ -249,6 +315,10 @@ def build_run_kwargs(args: argparse.Namespace) -> dict:
     )
     if args.restraints is not None:
         kwargs["constraint_path"] = args.restraints
+    if args.msa_directory is not None:
+        kwargs["msa_directory"] = args.msa_directory
+    if args.template_hits is not None:
+        kwargs["template_hits_path"] = args.template_hits
     return kwargs
 
 
@@ -319,6 +389,9 @@ def print_configuration(args: argparse.Namespace) -> None:
     print(f"restraints:           {args.restraints if args.restraints is not None else '(none -- constraint_path=None)'}")
     print(f"use_msa_server:       {args.use_msa}")
     print(f"use_templates_server: {args.use_templates}")
+    print(f"msa_directory:        {args.msa_directory}")
+    print(f"template_hits_path:   {args.template_hits}")
+    print(f"offline mode:         {offline_mode_enabled()}")
     print(f"fasta_names_as_cif_chains: True")
     print("=" * 70)
 
@@ -337,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     validate_args(args)
+    check_offline(args)
     check_kalign(args)
 
     # Requirement: "create output directory". Safe here -- validate_args()
