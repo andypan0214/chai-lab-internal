@@ -16,6 +16,10 @@ run_chai.slurm` from the chai_hpc directory, with FASTA_PATH /
 RESTRAINTS_PATH / USE_MSA / USE_TEMPLATES / OUTPUT_DIR passed as environment
 variables (run_chai.slurm reads exactly these). No inference logic lives here.
 
+The execution profile (execution.py, CHAI_EXECUTION_PROFILE: gpu | cpu) only
+picks the Slurm script, its extra sbatch options and CHAI_DEVICE; the job's
+inputs and every other variable are the same for both profiles.
+
 Statuses: QUEUED, RUNNING, SUCCESS, FAILED. A job is SUCCESS only when Slurm
 reports it finished AND its output directory holds Chai's CIF + scores files.
 """
@@ -33,6 +37,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from execution import ExecutionProfile, execution_profile
 from form_state import ValidatedJob, restraint_to_builder_dict
 from input_builder import write_fasta_file
 from restraint_builder import build_restraint_file
@@ -82,16 +87,28 @@ def default_jobs_root() -> Path:
 class SlurmBackend:
     """Thin wrapper over sbatch/squeue/sacct. Commands are overridable via
     CHAI_WEB_SBATCH / CHAI_WEB_SQUEUE / CHAI_WEB_SACCT, and extra sbatch
-    options (e.g. --partition/--account) via CHAI_WEB_SBATCH_ARGS."""
+    options (e.g. --partition/--account) via CHAI_WEB_SBATCH_ARGS plus the
+    profile's CHAI_WEB_GPU_SBATCH_ARGS / CHAI_WEB_CPU_SBATCH_ARGS.
+
+    profile=None means: read CHAI_EXECUTION_PROFILE at submission time."""
 
     workdir: Path = CHAI_HPC_DIR
-    script: str = "run_chai.slurm"
+    profile: ExecutionProfile | None = None
     runner: Runner = subprocess.run
 
     def _cmd(self, env_var: str, default: str) -> list[str]:
         return shlex.split(os.environ.get(env_var, default))
 
+    def resolve_profile(self) -> ExecutionProfile:
+        if self.profile is not None:
+            return self.profile
+        try:
+            return execution_profile()
+        except ValueError as e:
+            raise JobError(f"Server misconfiguration, please contact the administrator: {e}") from e
+
     def submit(self, job_dir: Path, env: dict[str, str], job_name: str) -> str:
+        profile = self.resolve_profile()
         cmd = [
             *self._cmd("CHAI_WEB_SBATCH", "sbatch"),
             "--parsable",
@@ -99,11 +116,13 @@ class SlurmBackend:
             f"--output={job_dir / 'slurm.out'}",
             f"--error={job_dir / 'slurm.err'}",
             *shlex.split(os.environ.get("CHAI_WEB_SBATCH_ARGS", "")),
-            self.script,
+            *shlex.split(os.environ.get(profile.sbatch_args_env, "")),
+            profile.slurm_script,
         ]
         try:
             proc = self.runner(
-                cmd, cwd=self.workdir, env={**os.environ, **env},
+                cmd, cwd=self.workdir,
+                env={**os.environ, **env, "CHAI_DEVICE": profile.device},
                 capture_output=True, text=True, timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -241,6 +260,7 @@ class JobStore:
             # web server's environment (see README_HPC.md, "Offline mode").
         }
         try:
+            job["execution_profile"] = self.backend.resolve_profile().name
             job["slurm_job_id"] = self.backend.submit(job_dir, env, job_name=f"chai1-web-{job_id}")
         except JobError as e:
             job["status"] = FAILED

@@ -23,7 +23,19 @@
 # #SBATCH --partition=...
 # #SBATCH --account=...
 
+# The header above is the GPU execution profile. The CPU profile submits
+# run_chai_cpu.slurm instead, which has its own resource request and then
+# runs this same body with CHAI_DEVICE=cpu (see execution.py).
+
 set -euo pipefail
+
+# Execution device, forwarded as run_inference(device=...). Only this and
+# the GPU checks below differ between profiles.
+CHAI_DEVICE="${CHAI_DEVICE:-cuda:0}"
+case "$CHAI_DEVICE" in
+    cuda:0|cpu) ;;
+    *) echo "ERROR: CHAI_DEVICE must be cuda:0 or cpu (got '$CHAI_DEVICE')." >&2; exit 1 ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 1. Move to the submission directory (where chai_env/, run_chai.py,
@@ -37,6 +49,7 @@ echo "=== Chai-1 Slurm job ${SLURM_JOB_ID:-unknown} ==="
 echo "Hostname:  $(hostname)"
 echo "Submit dir: $SLURM_SUBMIT_DIR"
 echo "Date:      $(date)"
+echo "Device:    $CHAI_DEVICE"
 echo
 
 # ---------------------------------------------------------------------------
@@ -50,10 +63,13 @@ echo
 
 # ---------------------------------------------------------------------------
 # 2. GPU sanity checks (fail fast, before spending time loading model weights)
+#    -- GPU profile only
 # ---------------------------------------------------------------------------
-echo "=== nvidia-smi ==="
-nvidia-smi
-echo
+if [ "$CHAI_DEVICE" != "cpu" ]; then
+    echo "=== nvidia-smi ==="
+    nvidia-smi
+    echo
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Activate the environment built by setup_env.sh
@@ -80,11 +96,13 @@ echo "kalign: $(command -v kalign || echo '(not found -- only needed for USE_TEM
 echo
 
 echo "=== torch / CUDA check ==="
-python -c "
-import torch
+CHAI_DEVICE="$CHAI_DEVICE" python -c "
+import os, torch
 print('torch version:', torch.__version__)
 print('torch.cuda.is_available():', torch.cuda.is_available())
-if torch.cuda.is_available():
+if os.environ['CHAI_DEVICE'] == 'cpu':
+    print('CPU profile: CUDA not required; torch threads:', torch.get_num_threads())
+elif torch.cuda.is_available():
     print('GPU name:', torch.cuda.get_device_name(0))
 else:
     raise SystemExit('CUDA not available on this node -- aborting before inference.')
@@ -139,7 +157,7 @@ export CHAI_OFFLINE_MODE
 # (job_manager.py) overrides OUTPUT_DIR with its own per-job directory.
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/job_${SLURM_JOB_ID}}"
 
-RUN_ARGS=(--fasta "$FASTA_PATH" --output "$OUTPUT_DIR")
+RUN_ARGS=(--fasta "$FASTA_PATH" --output "$OUTPUT_DIR" --device "$CHAI_DEVICE")
 [ -n "$SEED" ] && RUN_ARGS+=(--seed "$SEED")
 [ -n "$RESTRAINTS_PATH" ] && RUN_ARGS+=(--restraints "$RESTRAINTS_PATH")
 [ "$USE_MSA" = "1" ] && RUN_ARGS+=(--use-msa)
@@ -156,6 +174,7 @@ echo "USE_TEMPLATES:   $USE_TEMPLATES"
 echo "MSA_DIRECTORY:   ${MSA_DIRECTORY:-(none)}"
 echo "TEMPLATE_HITS:   ${TEMPLATE_HITS_PATH:-(none)}"
 echo "OFFLINE_MODE:    $CHAI_OFFLINE_MODE"
+echo "DEVICE:          $CHAI_DEVICE"
 echo "OUTPUT_DIR:      $OUTPUT_DIR"
 echo "run_chai.py args: ${RUN_ARGS[*]}"
 echo

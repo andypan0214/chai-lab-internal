@@ -60,9 +60,11 @@ for. Verified facts this wrapper depends on:
     constraint_path=None (chai_lab/chai1.py:508), so restraints are never
     silently invented.
 
-  - device is left at run_inference()'s own default (None -> "cuda:0",
-    chai_lab/chai1.py:535). We do not expose a --device flag here (not part
-    of this step's requested CLI surface).
+  - --device {cuda:0,cpu} is forwarded as run_inference(device=...)
+    (chai_lab/chai1.py:518/535). Omitted, it is not passed at all and
+    chai_lab's own default applies (None -> "cuda:0"). The device is chosen
+    by the deployment's execution profile (execution.py), never by the
+    scientific inputs; nothing else in the call depends on it.
 """
 
 from __future__ import annotations
@@ -76,6 +78,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from execution import DEVICES
 from offline import missing_model_assets, missing_template_cifs, offline_mode_enabled
 
 logger = logging.getLogger("run_chai")
@@ -161,6 +164,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "run_inference(template_hits_path=...). Cannot be combined with "
         "--use-templates. In offline mode every hit's <PDBID>.cif.gz must already "
         "be in the template CIF folder.",
+    )
+    parser.add_argument(
+        "--device",
+        choices=DEVICES,
+        default=None,
+        help="Execution device, forwarded as run_inference(device=...). Set by the "
+        "execution profile (run_chai.slurm: CHAI_DEVICE). Default: chai_lab's own "
+        "default (cuda:0).",
     )
     return parser
 
@@ -319,6 +330,8 @@ def build_run_kwargs(args: argparse.Namespace) -> dict:
         kwargs["msa_directory"] = args.msa_directory
     if args.template_hits is not None:
         kwargs["template_hits_path"] = args.template_hits
+    if args.device is not None:
+        kwargs["device"] = args.device
     return kwargs
 
 
@@ -359,12 +372,15 @@ def persist_confidence_arrays(candidates) -> list[Path]:
 # ---------------------------------------------------------------------------
 # GPU/environment reporting
 # ---------------------------------------------------------------------------
-def print_cuda_info() -> None:
+def print_cuda_info(device: str | None = None) -> None:
     """Print CUDA availability and GPU name. Imports torch lazily so the
     rest of this module stays usable (CLI parsing, validation) on a machine
     without torch installed."""
     import torch
 
+    if device == "cpu":
+        print(f"Execution device: cpu (torch threads: {torch.get_num_threads()})")
+        return
     available = torch.cuda.is_available()
     print(f"CUDA available: {available}")
     if available:
@@ -392,6 +408,7 @@ def print_configuration(args: argparse.Namespace) -> None:
     print(f"msa_directory:        {args.msa_directory}")
     print(f"template_hits_path:   {args.template_hits}")
     print(f"offline mode:         {offline_mode_enabled()}")
+    print(f"device:               {args.device or '(chai_lab default: cuda:0)'}")
     print(f"fasta_names_as_cif_chains: True")
     print("=" * 70)
 
@@ -418,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
     args.output.mkdir(parents=True, exist_ok=True)
 
     print_configuration(args)
-    print_cuda_info()
+    print_cuda_info(args.device)
 
     # Imported lazily: keeps --help / argument parsing / validate_args()
     # usable without torch or chai_lab installed (e.g. running the unit

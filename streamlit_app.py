@@ -8,7 +8,8 @@ UI only. The architecture boundary is:
       -> form_state / presets      (user-facing state, CSV example presets)
       -> input_builder / restraint_builder   (FASTA + restraint CSV, validation)
       -> job_manager               (job directory + sbatch run_chai.slurm)
-      -> run_chai.py -> chai_lab   (inference on the GPU node)
+      -> run_chai.py -> chai_lab   (inference on a compute node; GPU or CPU
+                                    per the server's execution profile)
       -> result_adapter            (reads Chai's CIF / scores / PAE files)
 
 Nothing here serializes FASTA or restraint CSV, runs inference or computes
@@ -540,7 +541,7 @@ def result_view(job_id: str) -> None:
 
     if job["status"] in (QUEUED, RUNNING):
         st.info(
-            "The prediction is waiting for a GPU." if job["status"] == QUEUED
+            "The prediction is waiting for compute resources." if job["status"] == QUEUED
             else "The prediction is running. This page updates automatically.",
             icon=":material/hourglass_top:",
         )

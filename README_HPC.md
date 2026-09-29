@@ -17,7 +17,9 @@ chai_hpc/
 ├── run_chai.py            # CLI wrapper around chai_lab.chai1.run_inference
 ├── input_builder.py       # UI molecule list -> Chai FASTA
 ├── restraint_builder.py   # UI restraint rows -> Chai restraint CSV
-├── run_chai.slurm         # generic Slurm GPU job template
+├── run_chai.slurm         # generic Slurm GPU job template (GPU execution profile)
+├── run_chai_cpu.slurm     # CPU execution profile: CPU resources, same job body (section 14)
+├── execution.py           # execution profiles gpu/cpu (CHAI_EXECUTION_PROFILE)
 ├── setup_env.sh           # builds the chai_env/ virtualenv
 ├── requirements.txt       # chai_lab==0.6.1 + pytest
 ├── streamlit_app.py       # web frontend (section 12)
@@ -384,6 +386,8 @@ There is no login: everyone who can reach the URL sees all predictions.
 If `run_chai.slurm` needs `--partition`/`--account` on this cluster, either
 edit its `#SBATCH` CHANGE_ME lines or set
 `CHAI_WEB_SBATCH_ARGS="--partition=... --account=..."` before `run_web.sh`.
+Whether jobs run on a GPU or a CPU is also a server setting, not a form
+field: see section 14.
 
 ### How a web job runs
 
@@ -496,6 +500,52 @@ tunnel) and reload a result page: the structure still renders and can be
 rotated (left-drag), zoomed (scroll) and translated (right- or middle-drag).
 `tests/test_offline.py` also asserts the app has no external `<script src>`
 and that the vendored file matches its recorded hash.
+
+## 14. Execution profiles (GPU / CPU)
+
+Where a job runs is a deployment decision, made by the administrator in the
+web server's environment. Lab members never see it: the form, the submitted
+job and the result pages are the same for both profiles.
+
+| `CHAI_EXECUTION_PROFILE` | Slurm script         | `run_inference(device=...)` | extra sbatch options       |
+|--------------------------|----------------------|-----------------------------|----------------------------|
+| `gpu` (default)          | `run_chai.slurm`     | `"cuda:0"`                  | `CHAI_WEB_GPU_SBATCH_ARGS` |
+| `cpu`                    | `run_chai_cpu.slurm` | `"cpu"`                     | `CHAI_WEB_CPU_SBATCH_ARGS` |
+
+```bash
+CHAI_EXECUTION_PROFILE=cpu CHAI_WEB_CPU_SBATCH_ARGS="--partition=..." bash run_web.sh
+```
+
+`CHAI_WEB_SBATCH_ARGS` still applies to both. An unknown profile name makes
+every submission fail with a "contact the administrator" message; nothing
+is submitted. There is **no automatic fallback** from GPU to CPU.
+
+What changes between profiles: only the Slurm resource request and the
+`device` argument. `run_chai_cpu.slurm` sets `CHAI_DEVICE=cpu` (and
+`OMP_NUM_THREADS` to the allocated CPUs) and runs the same `run_chai.slurm`
+body, which skips `nvidia-smi` / the CUDA check for `cpu` and passes
+`--device "$CHAI_DEVICE"` to `run_chai.py`. The FASTA, restraint CSV,
+MSA/template settings, output files, ranking (`aggregate_score`), PAE,
+pLDDT and scores come from the same `run_inference()` call and the same
+readers. `device` is an existing `run_inference()` parameter; chai_lab
+loads its model components and ESM on CPU for any device other than
+`cuda:0` (`chai_lab/chai1.py:143`, `data/dataset/embeddings/esm.py:38`).
+
+Each web job records its profile in `web_jobs/<job_id>/job.json`
+(`execution_profile`); `slurm.out` prints `Device:`. On the CLI:
+`sbatch run_chai_cpu.slurm` (same variables as `run_chai.slurm`) or
+`python run_chai.py ... --device cpu`.
+
+Expect the same scientific result, not bit-identical numbers: CPU and GPU
+kernels (and different GPU models) round floating-point differently, so
+coordinates and scores may differ in the last digits, and with a fixed seed
+the sampled candidates can differ slightly.
+
+**Not yet validated:** no CPU run has been made. Whether a full CPU run
+completes (the ESM model is fp16), how long it takes, and whether the
+starting request in `run_chai_cpu.slurm` (`--time=24:00:00`,
+`--cpus-per-task=16`, `--mem=128G`) is adequate must be measured on this
+cluster with a compact job first.
 
 ---
 

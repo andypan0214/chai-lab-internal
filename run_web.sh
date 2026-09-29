@@ -11,6 +11,8 @@
 # Optional environment variables:
 #   CHAI_WEB_JOBS_DIR       where web jobs are stored (default ./web_jobs)
 #   CHAI_WEB_SBATCH_ARGS    extra sbatch options, e.g. "--partition=gpu --account=lab"
+#   CHAI_EXECUTION_PROFILE  gpu (default) or cpu -- where jobs run (README section 14)
+#   CHAI_WEB_GPU_SBATCH_ARGS / CHAI_WEB_CPU_SBATCH_ARGS   per-profile sbatch options
 #   CHAI_WEB_SHOW_CANDIDATE_PRESETS=1   also show *_candidate.csv example presets
 
 set -euo pipefail
