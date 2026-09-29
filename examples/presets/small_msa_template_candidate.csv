@@ -1,0 +1,3 @@
+record_type,prediction_name,use_msa,use_templates,specify_restraints,molecule_type,copies,chain_ids,sequence,restraint_type,chain1,residue1,chain2,residue2,distance
+config,ubiquitin-msa-templates,true,true,false,,,,,,,,,,
+molecule,,,,,protein,1,A,MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG,,,,,,

@@ -1,0 +1,8 @@
+# Streamlit web frontend (streamlit_app.py). Installed on the machine that
+# serves the web app and submits Slurm jobs (normally the HPC login node).
+# The app itself never imports torch/chai_lab, so it can live in chai_env or
+# in its own lightweight venv.
+streamlit>=1.50,<2
+plotly>=5.20
+numpy>=1.24
+pandas>=2.0

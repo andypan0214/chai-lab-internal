@@ -1,0 +1,17 @@
+[server]
+# Bind to localhost only; reach the app through an SSH tunnel or the lab's
+# reverse proxy (see README_HPC.md, "Web app"). Override with
+# --server.address if the lab network setup requires it.
+address = "127.0.0.1"
+port = 8501
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#4F46E5"

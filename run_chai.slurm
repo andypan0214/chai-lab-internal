@@ -124,8 +124,9 @@ SEED="${SEED:-}"
 USE_MSA="${USE_MSA:-0}"
 USE_TEMPLATES="${USE_TEMPLATES:-0}"
 
-# Each job gets its own isolated, never-reused output directory.
-OUTPUT_DIR="outputs/job_${SLURM_JOB_ID}"
+# Each job gets its own isolated, never-reused output directory. The web app
+# (job_manager.py) overrides OUTPUT_DIR with its own per-job directory.
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/job_${SLURM_JOB_ID}}"
 
 RUN_ARGS=(--fasta "$FASTA_PATH" --output "$OUTPUT_DIR")
 [ -n "$SEED" ] && RUN_ARGS+=(--seed "$SEED")

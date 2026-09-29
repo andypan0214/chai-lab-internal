@@ -17,10 +17,18 @@ chai_hpc/
 ├── run_chai.py            # CLI wrapper around chai_lab.chai1.run_inference
 ├── input_builder.py       # UI molecule list -> Chai FASTA
 ├── restraint_builder.py   # UI restraint rows -> Chai restraint CSV
-├── example_input.json     # (Step D+ / not yet created)
 ├── run_chai.slurm         # generic Slurm GPU job template
 ├── setup_env.sh           # builds the chai_env/ virtualenv
 ├── requirements.txt       # chai_lab==0.6.1 + pytest
+├── streamlit_app.py       # web frontend (section 12)
+├── form_state.py          #   web form state <-> job config (validates via the builders)
+├── presets.py             #   CSV example presets loader
+├── job_manager.py         #   web job registry + sbatch submission/status
+├── result_adapter.py      #   reads Chai CIF / scores / PAE outputs
+├── examples/presets/      #   example preset CSVs (+ README with sources)
+├── requirements-web.txt   #   streamlit, plotly, numpy, pandas
+├── run_web.sh             #   starts the web app
+├── .streamlit/config.toml #   binds to 127.0.0.1:8501, light theme
 ├── README_HPC.md          # this file
 └── tests/                 # non-GPU unit tests (pytest)
 ```
@@ -207,14 +215,16 @@ outputs/job_<id>/
 ├── pred.model_idx_1.cif       # ... one per diffusion sample (5 by default)
 ├── ...
 ├── scores.model_idx_0.npz     # aggregate score, pTM, ipTM, pLDDT, clashes for sample 0
+├── confidence.model_idx_0.npz # pae (N,N), pde (N,N), plddt (N,) for sample 0 -- saved by run_chai.py
 ├── ...
 └── msas/                      # only present if --use-msa was set
 ```
 
-PAE/PDE are returned **in memory** on `run_inference()`'s return value
-(`StructureCandidates.pae` / `.pde`), not written to disk by Chai itself --
-`run_chai.py` does not currently save them (task scope: "do not convert or
-postprocess result files yet unless needed for a minimal successful run").
+PAE/PDE/per-token pLDDT are returned **in memory** on `run_inference()`'s
+return value (`StructureCandidates.pae` / `.pde` / `.plddt`), not written to
+disk by Chai itself. `run_chai.py` saves candidate *i*'s arrays unchanged to
+`confidence.model_idx_<i>.npz` next to `pred.model_idx_<i>.cif`, so the web
+app can show the PAE heatmap later.
 
 Other generated/log locations:
 
@@ -232,7 +242,8 @@ Other generated/log locations:
 has actually executed on this cluster's hardware.**
 
 Verified so far, by reading the official source and by non-GPU unit tests
-(`tests/`, 86 tests total across `input_builder.py`, `restraint_builder.py`,
+(`tests/`, 119 tests total across `input_builder.py`, `restraint_builder.py`,
+the web modules (`tests/test_web.py`),
 and `run_chai.py`'s CLI/validation -- 4 of which round-trip generated
 restraint CSVs through the real `chai_lab.data.parsing.restraints` parser;
 those 4 auto-skip if `pandas`/`pandera` aren't installed, e.g. in a
@@ -345,6 +356,72 @@ Re-run `bash setup_env.sh` to build `tools/kalign/bin/kalign`, and for
 interactive runs `export PATH="$PWD/tools/kalign/bin:$PATH"`. If the build
 fails, check that `cc`/`c++` are available (load a compiler module) and that
 the login node can reach `github.com`.
+
+## 12. Web app (Streamlit)
+
+Lab members only need a browser: they fill in molecules/restraints (or load
+an example), press **Predict 3D structure**, watch the job on
+**Predictions**, and open the result page (ipTM/pTM, pLDDT-coloured 3D
+structure, PAE heatmap, input tables, downloads).
+
+### Setup (admin, once)
+
+On a machine that can run `sbatch`/`squeue`/`sacct` (normally the login
+node), in `chai_hpc/`, after `setup_env.sh` has built `chai_env`:
+
+```bash
+source chai_env/bin/activate            # or a separate light venv: the app
+pip install -r requirements-web.txt     # never imports torch/chai_lab
+bash run_web.sh                         # http://127.0.0.1:8501
+```
+
+`.streamlit/config.toml` binds to `127.0.0.1` only. Users reach it through an
+SSH tunnel (`ssh -L 8501:127.0.0.1:8501 <login-node>`, then open
+<http://localhost:8501>) or a lab reverse proxy; pass
+`--server.address 0.0.0.0` only if the cluster's network policy allows it.
+There is no login: everyone who can reach the URL sees all predictions.
+
+If `run_chai.slurm` needs `--partition`/`--account` on this cluster, either
+edit its `#SBATCH` CHANGE_ME lines or set
+`CHAI_WEB_SBATCH_ARGS="--partition=... --account=..."` before `run_web.sh`.
+
+### How a web job runs
+
+1. The form is validated by `input_builder.build_chai_input` and
+   `restraint_builder.validate_restraints` (the same rules as the CLI path;
+   templates require MSAs, pocket restraints never take a residue on the
+   whole-chain side).
+2. `job_manager.py` creates `web_jobs/<job_id>/` (override with
+   `CHAI_WEB_JOBS_DIR`) holding `config.json`, `input.fasta`,
+   `restraints.csv`, `job.json` (status) and, later, `output/` and
+   `slurm.out`/`slurm.err`.
+3. It runs `sbatch run_chai.slurm` from `chai_hpc/` with `FASTA_PATH`,
+   `RESTRAINTS_PATH`, `USE_MSA`, `USE_TEMPLATES` and `OUTPUT_DIR` set, i.e.
+   the unchanged CLI/Slurm path.
+4. Status (QUEUED / RUNNING / SUCCESS / FAILED) comes from `squeue`/`sacct`
+   plus a check that Chai's CIF + scores files exist.
+5. The result page reads Chai's own files through `result_adapter.py`:
+   candidates ranked by `aggregate_score` (best first, switchable), ipTM/pTM
+   from `scores.model_idx_*.npz`, structure coloured by the per-atom pLDDT
+   Chai writes into the CIF B-factor column, PAE from
+   `confidence.model_idx_*.npz` (colour range 0 to the matrix maximum).
+
+**Current limitation -- the 3D viewer needs browser internet access.** The
+structure viewer loads 3Dmol.js 2.5.5 from
+`https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.5.5/3Dmol-min.js` in the
+*user's browser* (`THREE_DMOL_JS` in `streamlit_app.py`). The Streamlit
+server itself needs no internet. If a browser cannot reach cdnjs (offline
+lab network, blocking proxy), the structure panel stays empty; everything
+else (scores, PAE heatmap, tables, downloads) still works. Offline bundling
+of 3Dmol.js is not implemented yet.
+
+### Example presets
+
+See `examples/presets/README.md`. Only the compact 3-chain restraints demo is
+shown to users; the small MSA + template demo stays hidden
+(`small_msa_template_candidate.csv`) until it has passed a real HPC run.
+Start the app with `CHAI_WEB_SHOW_CANDIDATE_PRESETS=1` to submit it for that
+validation, then rename it to `small_msa_template.csv`.
 
 ---
 

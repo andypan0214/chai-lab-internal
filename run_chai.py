@@ -253,6 +253,40 @@ def build_run_kwargs(args: argparse.Namespace) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Result persistence
+# ---------------------------------------------------------------------------
+def confidence_path_for(cif_path: Path) -> Path:
+    """pred.model_idx_3.cif -> confidence.model_idx_3.npz (same directory)."""
+    return cif_path.with_name(cif_path.stem.replace("pred.", "confidence.", 1) + ".npz")
+
+
+def persist_confidence_arrays(candidates) -> list[Path]:
+    """Save each candidate's PAE / PDE / per-token pLDDT next to its CIF.
+
+    chai_lab writes CIFs and scores.model_idx_*.npz to disk, but returns
+    PAE/PDE/pLDDT only in memory on StructureCandidates (chai_lab/chai1.py:
+    StructureCandidates, run_folding_on_context). Candidate i of every array
+    corresponds to cif_paths[i] (both built in the same loop and concatenated
+    in the same order by StructureCandidates.concat). Values are written
+    unchanged (np.asarray on the CPU tensors chai_lab already returns).
+    """
+    import numpy as np
+
+    paths = []
+    for i, cif_path in enumerate(candidates.cif_paths):
+        out_path = confidence_path_for(Path(cif_path))
+        np.savez(
+            out_path,
+            allow_pickle=False,
+            pae=np.asarray(candidates.pae[i]),
+            pde=np.asarray(candidates.pde[i]),
+            plddt=np.asarray(candidates.plddt[i]),
+        )
+        paths.append(out_path)
+    return paths
+
+
+# ---------------------------------------------------------------------------
 # GPU/environment reporting
 # ---------------------------------------------------------------------------
 def print_cuda_info() -> None:
@@ -330,6 +364,8 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(f"run_inference() returned {len(candidates.cif_paths)} structure candidate(s):")
     for cif_path in candidates.cif_paths:
         print(f"  {cif_path}")
+    for path in persist_confidence_arrays(candidates):
+        print(f"  {path}")
     print(f"Outputs written under: {args.output}")
 
     return 0
